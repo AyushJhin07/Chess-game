@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Animated 3D Chess</title>
+    <script type="module" crossorigin src="/assets/index-BTp_69XC.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BCEZBTf7.css">
+  </head>
+  <body>
+    <div id="ui">
+      <div id="sidebar">
+        <header>
+          <h1>Animated 3D Chess</h1>
+          <div class="timers">
+            <div>
+              <strong>White</strong>
+              <span id="white-timer">10:00</span>
+            </div>
+            <div>
+              <strong>Black</strong>
+              <span id="black-timer">10:00</span>
+            </div>
+          </div>
+          <p id="status">White to move</p>
+        </header>
+        <div id="panel-stack">
+          <section>
+            <h2>Controls</h2>
+            <button id="undo-btn">Undo</button>
+            <button id="reset-btn">Reset</button>
+            <label class="stack">
+              Animation Speed
+              <input id="animation-speed" type="range" min="0.5" max="2" step="0.1" value="1">
+            </label>
+            <label class="stack">
+              VFX Intensity
+              <input id="vfx-intensity" type="range" min="0" max="1.2" step="0.1" value="1">
+            </label>
+          </section>
+          <section>
+            <h2>Opponent</h2>
+            <label class="stack">
+              Mode
+              <select id="mode-select">
+                <option value="human">Human vs Human</option>
+                <option value="ai">Vs AI (You play White)</option>
+              </select>
+            </label>
+            <label class="stack">
+              Difficulty
+              <input id="ai-difficulty" type="range" min="1" max="4" step="1" value="2">
+            </label>
+            <p class="status-row">
+              <span>AI</span>
+              <span id="ai-status">Manual play</span>
+            </p>
+          </section>
+          <section>
+            <h2>Audio</h2>
+            <button id="audio-toggle">Enable Audio</button>
+            <label class="stack">
+              Volume
+              <input id="audio-volume" type="range" min="0" max="1" step="0.05" value="0.6">
+            </label>
+            <p class="status-row">
+              <span>Sound</span>
+              <span id="audio-status">Muted</span>
+            </p>
+          </section>
+        </div>
+      </div>
+      <aside id="move-panel">
+        <h2>Moves</h2>
+        <ol id="move-list"></ol>
+      </aside>
+    </div>
+    <canvas id="app"></canvas>
+  </body>
+</html>
