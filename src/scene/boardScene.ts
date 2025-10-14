@@ -1,14 +1,20 @@
 import {
   AdditiveBlending,
   AmbientLight,
+  AnimationAction,
+  AnimationClip,
+  AnimationMixer,
   BufferGeometry,
   Clock,
   Color,
   DirectionalLight,
   Float32BufferAttribute,
   Group,
+  LoopOnce,
+  LoopRepeat,
   MathUtils,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
@@ -16,6 +22,7 @@ import {
   PointsMaterial,
   PMREMGenerator,
   Raycaster,
+  RingGeometry,
   Scene,
   Vector2,
   Vector3,
@@ -30,11 +37,16 @@ type Square = ChessJsMove["from"];
 
 type Listener<T> = (payload: T) => void;
 
+type AnimationLabel = "idle" | "move" | "attack" | "hit" | "death";
+type AnimationBindings = Partial<Record<AnimationLabel, AnimationAction>>;
+
 type PieceObject = {
   mesh: Group;
   color: PieceColor;
   kind: PieceKind;
   square: Square;
+  mixer?: AnimationMixer;
+  animations?: AnimationBindings;
 };
 
 type BoardSceneEvents = {
@@ -78,6 +90,12 @@ export class BoardScene {
   private pieces = new Map<Square, PieceObject>();
   private hoveredSquare: Square | null = null;
   private particleBursts: ParticleBurst[] = [];
+  private mixers = new Set<AnimationMixer>();
+  private shakeDuration = 0;
+  private shakeElapsed = 0;
+  private shakeStrength = 0;
+  private shakeOffset = new Vector3();
+  private shakeTargetOffset = new Vector3();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -179,14 +197,20 @@ export class BoardScene {
       this.scene.remove(piece.mesh);
       const promoted = createPieceMesh(piece.color, move.promotion as PieceKind);
       promoted.position.copy(target);
-      promoted.castShadow = true;
+      const prepared = this.preparePieceVisual(promoted);
       this.scene.add(promoted);
-      this.pieces.set(move.to, {
+      const promotedPiece: PieceObject = {
         mesh: promoted,
         color: piece.color,
         kind: move.promotion as PieceKind,
-        square: move.to
-      });
+        square: move.to,
+        ...prepared
+      };
+      if (prepared.mixer) {
+        this.mixers.add(prepared.mixer);
+      }
+      this.pieces.set(move.to, promotedPiece);
+      this.playAnimation(promotedPiece, "idle", { fadeIn: 0.3, loop: "repeat" });
     } else {
       piece.mesh.position.copy(target);
       piece.mesh.rotation.set(0, 0, 0);
@@ -200,12 +224,15 @@ export class BoardScene {
 
   async captureEffect(piece: PieceObject) {
     const mesh = piece.mesh;
+    const impactPosition = mesh.position.clone();
     this.pieces.delete(piece.square);
+    this.playAnimation(piece, "death", { fadeIn: 0.1, loop: "once" });
+    this.playAnimation(piece, "hit", { fadeIn: 0.05, loop: "once" });
 
     const startY = mesh.position.y;
     const randomRotation = (Math.random() - 0.5) * Math.PI * 1.5;
     if (this.vfxIntensity > 0.05) {
-      this.spawnCaptureBurst(mesh.position.clone());
+      this.spawnCaptureBurst(impactPosition.clone());
     }
 
     await this.tween(0.25 / this.animationSpeed, (t) => {
@@ -222,6 +249,12 @@ export class BoardScene {
 
     mesh.visible = false;
     this.scene.remove(mesh);
+    if (piece.mixer) {
+      piece.mixer.stopAllAction();
+      this.mixers.delete(piece.mixer);
+    }
+    this.spawnShockwave(impactPosition);
+    this.shakeCamera(0.45 * this.vfxIntensity, 0.32 / this.animationSpeed);
   }
 
   removePiece(square: Square) {
@@ -229,6 +262,10 @@ export class BoardScene {
     if (piece) {
       piece.mesh.visible = false;
       this.pieces.delete(square);
+      if (piece.mixer) {
+        piece.mixer.stopAllAction();
+        this.mixers.delete(piece.mixer);
+      }
     }
   }
 
@@ -245,8 +282,73 @@ export class BoardScene {
   private addPiece(square: Square, kind: PieceKind, color: PieceColor) {
     const mesh = createPieceMesh(color, kind);
     mesh.position.copy(squareToVector(square));
+    const prepared = this.preparePieceVisual(mesh);
     this.scene.add(mesh);
-    this.pieces.set(square, { mesh, color, kind, square });
+    const piece: PieceObject = { mesh, color, kind, square, ...prepared };
+    if (piece.mixer) {
+      this.mixers.add(piece.mixer);
+    }
+    this.pieces.set(square, piece);
+    this.playAnimation(piece, "idle", { fadeIn: 0.3, loop: "repeat" });
+  }
+
+  private preparePieceVisual(mesh: Group): Pick<PieceObject, "mixer" | "animations"> {
+    const clipDictionary = mesh.userData?.animationClips as
+      | Partial<Record<AnimationLabel, AnimationClip>>
+      | undefined;
+    if (!clipDictionary || Object.keys(clipDictionary).length === 0) {
+      return {};
+    }
+
+    const mixer = new AnimationMixer(mesh);
+    const actions: AnimationBindings = {};
+    (Object.entries(clipDictionary) as [AnimationLabel, AnimationClip][]).forEach(([label, clip]) => {
+      if (!clip) return;
+      const action = mixer.clipAction(clip);
+      if (label === "idle") {
+        action.setLoop(LoopRepeat, Infinity);
+        action.enabled = true;
+        action.play();
+      } else {
+        action.setLoop(LoopOnce, 1);
+        action.clampWhenFinished = true;
+      }
+      actions[label] = action;
+    });
+    return { mixer, animations: actions };
+  }
+
+  private playAnimation(
+    piece: PieceObject,
+    label: AnimationLabel,
+    options: { fadeIn?: number; fadeOut?: number; loop?: "once" | "repeat"; timeScale?: number } = {}
+  ) {
+    if (!piece.animations) return;
+    const action = piece.animations[label];
+    if (!action) return;
+    const fadeIn = options.fadeIn ?? 0.2;
+    const fadeOut = options.fadeOut ?? 0.2;
+    const loopSetting = options.loop ?? (label === "idle" ? "repeat" : "once");
+    const timeScale = options.timeScale ?? 1;
+
+    Object.values(piece.animations).forEach((other) => {
+      if (other && other !== action) {
+        other.fadeOut(fadeOut);
+      }
+    });
+
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveTimeScale(timeScale);
+    if (loopSetting === "once") {
+      action.setLoop(LoopOnce, 1);
+      action.clampWhenFinished = true;
+    } else {
+      action.setLoop(LoopRepeat, Infinity);
+      action.clampWhenFinished = false;
+    }
+    action.fadeIn(fadeIn);
+    action.play();
   }
 
   private async handleCastling(move: ChessJsMove) {
@@ -282,6 +384,7 @@ export class BoardScene {
     mesh.position.copy(start);
     mesh.rotation.set(0, 0, 0);
     const durationFactor = 1 / this.animationSpeed;
+    this.playAnimation(piece, "move", { fadeIn: 0.12, loop: "once" });
 
     switch (piece.kind) {
       case "p":
@@ -372,6 +475,7 @@ export class BoardScene {
     }
     mesh.position.copy(target);
     mesh.rotation.set(0, 0, 0);
+    this.playAnimation(piece, "idle", { fadeIn: 0.3, loop: "repeat" });
   }
 
   private async animatePieceAttack(
@@ -385,6 +489,8 @@ export class BoardScene {
     mesh.position.copy(start);
     mesh.rotation.set(0, 0, 0);
     const durationFactor = 1 / this.animationSpeed;
+    this.playAnimation(piece, "attack", { fadeIn: 0.1, loop: "once" });
+    this.playAnimation(captured, "hit", { fadeIn: 0.08, loop: "once" });
     let handledCapture = false;
 
     switch (piece.kind) {
@@ -499,6 +605,7 @@ export class BoardScene {
 
     mesh.position.copy(target);
     mesh.rotation.set(0, 0, 0);
+    this.playAnimation(piece, "idle", { fadeIn: 0.35, loop: "repeat" });
     if (handledCapture) {
       await this.cinematicHit(target, this.cinematicIntensity(piece.kind));
     }
@@ -578,6 +685,10 @@ export class BoardScene {
   private clearPieces() {
     for (const piece of this.pieces.values()) {
       this.scene.remove(piece.mesh);
+      if (piece.mixer) {
+        piece.mixer.stopAllAction();
+        this.mixers.delete(piece.mixer);
+      }
     }
     this.pieces.clear();
   }
@@ -643,7 +754,9 @@ export class BoardScene {
     this.controls.update();
     const delta = this.clock.getDelta();
     this.updateTweens(delta);
+    this.updateMixers(delta);
     this.updateBursts(delta);
+    this.applyCameraShake(delta);
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -658,6 +771,10 @@ export class BoardScene {
         tween.resolve();
       }
     });
+  }
+
+  private updateMixers(delta: number) {
+    this.mixers.forEach((mixer) => mixer.update(delta));
   }
 
   private updateBursts(delta: number) {
@@ -685,6 +802,46 @@ export class BoardScene {
         this.particleBursts.splice(i, 1);
       }
     }
+  }
+
+  private applyCameraShake(delta: number) {
+    if (this.shakeDuration <= 0) return;
+    this.camera.position.sub(this.shakeOffset);
+    this.controls.target.sub(this.shakeTargetOffset);
+
+    this.shakeElapsed += delta;
+    const progress = Math.min(1, this.shakeElapsed / this.shakeDuration);
+    const falloff = 1 - progress;
+    const magnitude = this.shakeStrength * falloff;
+
+    this.shakeOffset.set(
+      (Math.random() - 0.5) * magnitude,
+      (Math.random() - 0.5) * magnitude * 0.6,
+      (Math.random() - 0.5) * magnitude
+    );
+    this.shakeTargetOffset.copy(this.shakeOffset).multiplyScalar(0.25);
+
+    this.camera.position.add(this.shakeOffset);
+    this.controls.target.add(this.shakeTargetOffset);
+
+    if (this.shakeElapsed >= this.shakeDuration) {
+      this.camera.position.sub(this.shakeOffset);
+      this.controls.target.sub(this.shakeTargetOffset);
+      this.shakeDuration = 0;
+      this.shakeElapsed = 0;
+      this.shakeOffset.set(0, 0, 0);
+      this.shakeTargetOffset.set(0, 0, 0);
+    }
+  }
+
+  private shakeCamera(strength: number, duration: number) {
+    this.camera.position.sub(this.shakeOffset);
+    this.controls.target.sub(this.shakeTargetOffset);
+    this.shakeOffset.set(0, 0, 0);
+    this.shakeTargetOffset.set(0, 0, 0);
+    this.shakeStrength = strength;
+    this.shakeDuration = duration;
+    this.shakeElapsed = 0;
   }
 
   private tween(duration: number, update: (progress: number) => void, easing: (t: number) => number = easeInOutQuad) {
@@ -741,6 +898,33 @@ export class BoardScene {
       material,
       life: 0,
       maxLife: 0.6 + strength * 0.4
+    });
+  }
+
+  private spawnShockwave(position: Vector3) {
+    if (this.vfxIntensity <= 0.01) return;
+    const ring = new RingGeometry(0.35, 0.38, 48);
+    const material = new MeshBasicMaterial({
+      color: new Color("#8ed6ff"),
+      transparent: true,
+      opacity: 0.4,
+      blending: AdditiveBlending
+    });
+    const mesh = new Mesh(ring, material);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.copy(position);
+    mesh.position.y = 0.05;
+    this.scene.add(mesh);
+
+    this.tween(0.45 / this.animationSpeed, (t) => {
+      const eased = easeOutQuad(t);
+      const scale = 1 + eased * 4 * this.vfxIntensity;
+      mesh.scale.setScalar(scale);
+      material.opacity = (1 - eased) * 0.35;
+    }).then(() => {
+      this.scene.remove(mesh);
+      material.dispose();
+      ring.dispose();
     });
   }
 

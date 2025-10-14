@@ -13,6 +13,7 @@ import {
   Vector2,
   SRGBColorSpace
 } from "three";
+import { PieceAssetManager } from "../assets/pieceAssets";
 
 export type PieceColor = "w" | "b";
 export type PieceKind = "p" | "r" | "n" | "b" | "q" | "k";
@@ -91,7 +92,15 @@ const MATERIALS: Record<
   }
 };
 
+const assetManager = PieceAssetManager.getInstance();
+
 export function createPieceMesh(color: PieceColor, kind: PieceKind) {
+  const assetClone = assetManager.instantiateSync(kind, color);
+  if (assetClone) {
+    assetClone.scale.setScalar(1);
+    return assetClone;
+  }
+
   const group = new Group();
   const { primary, accent } = MATERIALS[color];
 

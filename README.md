@@ -40,6 +40,16 @@ npm run preview
 - **Difficulty** – selects one of four engine search depths (higher is tougher but slower).
 - **Audio Toggle & Volume** – enables the ambient pad + event cues and sets global loudness.
 
+## Custom Assets
+
+You can swap the procedural pieces for your own rigged GLTF/GLB chess set:
+
+1. Export (or purchase) rigged pieces with animation clips (idle/move/attack/hit/death).
+2. Place the files in `public/assets` (or host them elsewhere) and update `assetConfigs` inside `src/assets/defaultAssets.ts` with the paths and clip names.
+3. On load the `PieceAssetManager` clones each GLTF, wires up `AnimationMixer`s, and the existing capture choreography will trigger your clips automatically.
+
+If a piece asset is missing, the engine quietly falls back to the procedural models, so you can integrate pieces incrementally.
+
 ## Structure
 
 - `src/game` – chess engine wrapper and dual clock.

@@ -4,6 +4,7 @@ import { DualChessClock } from "./game/clock";
 import type { BoardScene } from "./scene/boardScene";
 import type { PieceColor, PieceKind } from "./scene/pieceFactory";
 import type { AudioManager, SpatialPosition } from "./audio/audioManager";
+import { loadConfiguredAssets } from "./assets/defaultAssets";
 
 type DifficultyLevel = import("./game/simpleAi").DifficultyLevel;
 
@@ -245,7 +246,8 @@ function toSpatial(vector: { x: number; z: number }): SpatialPosition {
 }
 
 async function bootstrap() {
-  const [{ BoardScene }, { AudioManager }] = await Promise.all([
+  const [_, { BoardScene }, { AudioManager }] = await Promise.all([
+    loadConfiguredAssets(),
     import("./scene/boardScene"),
     import("./audio/audioManager")
   ]);
