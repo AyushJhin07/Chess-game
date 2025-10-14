@@ -478,6 +478,116 @@ export class BoardScene {
     this.playAnimation(piece, "idle", { fadeIn: 0.3, loop: "repeat" });
   }
 
+  private async playDuel(
+    attacker: PieceObject,
+    defender: PieceObject,
+    params: { start: Vector3; target: Vector3 }
+  ) {
+    const { start, target } = params;
+    const attackerMesh = attacker.mesh;
+    const defenderMesh = defender.mesh;
+    const durationFactor = 1 / this.animationSpeed;
+    const center = start.clone().lerp(target, 0.5);
+    const forward = target.clone().sub(start).setY(0);
+    if (forward.lengthSq() < 0.0001) {
+      forward.set(0, 0, 1);
+    }
+    forward.normalize();
+
+    const arenaOffset = 0.38;
+    const attackerBase = center.clone().addScaledVector(forward, -arenaOffset);
+    const defenderBase = center.clone().addScaledVector(forward, arenaOffset);
+    const attackerWindup = attackerBase.clone().addScaledVector(forward, -0.22);
+    const attackerLunge = attackerBase.clone().addScaledVector(forward, 0.28);
+    const defenderRetreat = defenderBase.clone().addScaledVector(forward, 0.18);
+    const defenderCounter = defenderBase.clone().addScaledVector(forward, -0.12);
+    const defenderCollapse = defenderBase.clone().addScaledVector(forward, -0.2);
+
+    attackerMesh.position.copy(start);
+    defenderMesh.position.copy(target);
+    attackerMesh.rotation.set(0, 0, 0);
+    defenderMesh.rotation.set(0, 0, 0);
+    const facingAngle = Math.atan2(forward.x, forward.z);
+    attackerMesh.rotation.y = facingAngle;
+    defenderMesh.rotation.y = facingAngle + Math.PI;
+
+    await this.tween(0.18 * durationFactor, (t) => {
+      const eased = easeInOutQuad(t);
+      attackerMesh.position.lerpVectors(start, attackerBase, eased);
+      defenderMesh.position.lerpVectors(target, defenderBase, eased);
+    });
+
+    this.playAnimation(attacker, "attack", {
+      fadeIn: 0.08,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    await this.tween(0.2 * durationFactor, (t) => {
+      const eased = easeOutCubic(t);
+      attackerMesh.position.lerpVectors(attackerBase, attackerWindup, eased);
+      attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.22;
+      defenderMesh.position.lerpVectors(defenderBase, defenderRetreat, eased * 0.6);
+      defenderMesh.position.y = Math.sin(Math.PI * eased * 0.5) * 0.18;
+    });
+    await this.tween(0.08 * durationFactor, () => {});
+    this.shakeCamera(0.22 * this.vfxIntensity, 0.18 * durationFactor);
+
+    this.playAnimation(defender, "hit", {
+      fadeIn: 0.05,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    await this.tween(0.18 * durationFactor, (t) => {
+      const eased = easeOutQuad(t);
+      attackerMesh.position.lerpVectors(attackerWindup, attackerLunge, eased);
+      defenderMesh.position.lerpVectors(defenderRetreat, defenderBase, eased);
+      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.32;
+    });
+    await this.tween(0.08 * durationFactor, () => {});
+    this.shakeCamera(0.28 * this.vfxIntensity, 0.18 * durationFactor);
+
+    this.playAnimation(defender, "attack", {
+      fadeIn: 0.06,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    this.playAnimation(attacker, "hit", {
+      fadeIn: 0.05,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    await this.tween(0.18 * durationFactor, (t) => {
+      const eased = easeOutQuad(t);
+      defenderMesh.position.lerpVectors(defenderBase, defenderCounter, eased);
+      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.24;
+      attackerMesh.position.lerpVectors(attackerLunge, attackerBase, eased);
+      attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.18;
+    });
+    await this.cinematicHit(center, this.cinematicIntensity(attacker.kind) * 0.75);
+    await this.tween(0.1 * durationFactor, () => {});
+
+    this.playAnimation(attacker, "attack", {
+      fadeIn: 0.08,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    this.playAnimation(defender, "death", {
+      fadeIn: 0.12,
+      loop: "once",
+      timeScale: this.animationSpeed
+    });
+    this.shakeCamera(0.36 * this.vfxIntensity, 0.24 * durationFactor);
+    await this.tween(0.22 * durationFactor, (t) => {
+      const eased = easeInOutQuad(t);
+      attackerMesh.position.lerpVectors(attackerBase, target, eased);
+      defenderMesh.position.lerpVectors(defenderCounter, defenderCollapse, eased);
+      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.28;
+    });
+    await this.tween(0.12 * durationFactor, () => {});
+
+    await this.captureEffect(defender);
+  }
+
   private async animatePieceAttack(
     piece: PieceObject,
     move: ChessJsMove,
@@ -488,6 +598,15 @@ export class BoardScene {
     const mesh = piece.mesh;
     mesh.position.copy(start);
     mesh.rotation.set(0, 0, 0);
+    const canDuel = Boolean(piece.animations?.attack && piece.animations?.hit);
+    if (canDuel) {
+      await this.playDuel(piece, captured, { start, target });
+      mesh.position.copy(target);
+      mesh.rotation.set(0, 0, 0);
+      this.playAnimation(piece, "idle", { fadeIn: 0.35, loop: "repeat" });
+      return true;
+    }
+
     const durationFactor = 1 / this.animationSpeed;
     this.playAnimation(piece, "attack", { fadeIn: 0.1, loop: "once" });
     this.playAnimation(captured, "hit", { fadeIn: 0.08, loop: "once" });
