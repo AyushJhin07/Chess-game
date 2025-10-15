@@ -95,12 +95,6 @@ const MATERIALS: Record<
 const assetManager = PieceAssetManager.getInstance();
 
 export function createPieceMesh(color: PieceColor, kind: PieceKind) {
-  const assetClone = assetManager.instantiateSync(kind, color);
-  if (assetClone) {
-    assetClone.scale.setScalar(1);
-    return assetClone;
-  }
-
   const group = new Group();
   const { primary, accent } = MATERIALS[color];
 
@@ -136,7 +130,17 @@ export function createPieceMesh(color: PieceColor, kind: PieceKind) {
 
   body.position.y = 0.5;
   group.add(body);
-  group.userData = { color, kind };
+  const userData: Record<string, unknown> = { color, kind };
+
+  const assetClone = assetManager.instantiateSync(kind, color);
+  if (assetClone) {
+    assetClone.scale.setScalar(1);
+    assetClone.visible = false;
+    assetClone.removeFromParent();
+    userData.battleAvatar = assetClone;
+  }
+
+  group.userData = userData;
   group.scale.setScalar(0.9);
 
   return group;

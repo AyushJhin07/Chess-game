@@ -29,6 +29,7 @@ import {
   WebGLRenderer
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import { createPieceMesh, PieceColor, PieceKind } from "./pieceFactory";
 import { Move as ChessJsMove } from "chess.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -45,8 +46,14 @@ type PieceObject = {
   color: PieceColor;
   kind: PieceKind;
   square: Square;
-  mixer?: AnimationMixer;
-  animations?: AnimationBindings;
+  battleAvatar?: PieceBattleAvatar;
+};
+
+type PieceBattleAvatar = {
+  mesh: Group;
+  mixer: AnimationMixer;
+  animations: AnimationBindings;
+  clips: Partial<Record<AnimationLabel, AnimationClip>>;
 };
 
 type BoardSceneEvents = {
@@ -206,8 +213,8 @@ export class BoardScene {
         square: move.to,
         ...prepared
       };
-      if (prepared.mixer) {
-        this.mixers.add(prepared.mixer);
+      if (prepared.battleAvatar) {
+        this.mixers.add(prepared.battleAvatar.mixer);
       }
       this.pieces.set(move.to, promotedPiece);
       this.playAnimation(promotedPiece, "idle", { fadeIn: 0.3, loop: "repeat" });
@@ -249,9 +256,9 @@ export class BoardScene {
 
     mesh.visible = false;
     this.scene.remove(mesh);
-    if (piece.mixer) {
-      piece.mixer.stopAllAction();
-      this.mixers.delete(piece.mixer);
+    if (piece.battleAvatar) {
+      piece.battleAvatar.mixer.stopAllAction();
+      this.mixers.delete(piece.battleAvatar.mixer);
     }
     this.spawnShockwave(impactPosition);
     this.shakeCamera(0.45 * this.vfxIntensity, 0.32 / this.animationSpeed);
@@ -262,9 +269,9 @@ export class BoardScene {
     if (piece) {
       piece.mesh.visible = false;
       this.pieces.delete(square);
-      if (piece.mixer) {
-        piece.mixer.stopAllAction();
-        this.mixers.delete(piece.mixer);
+      if (piece.battleAvatar) {
+        piece.battleAvatar.mixer.stopAllAction();
+        this.mixers.delete(piece.battleAvatar.mixer);
       }
     }
   }
@@ -285,37 +292,27 @@ export class BoardScene {
     const prepared = this.preparePieceVisual(mesh);
     this.scene.add(mesh);
     const piece: PieceObject = { mesh, color, kind, square, ...prepared };
-    if (piece.mixer) {
-      this.mixers.add(piece.mixer);
+    if (piece.battleAvatar) {
+      this.mixers.add(piece.battleAvatar.mixer);
     }
     this.pieces.set(square, piece);
     this.playAnimation(piece, "idle", { fadeIn: 0.3, loop: "repeat" });
   }
 
-  private preparePieceVisual(mesh: Group): Pick<PieceObject, "mixer" | "animations"> {
-    const clipDictionary = mesh.userData?.animationClips as
-      | Partial<Record<AnimationLabel, AnimationClip>>
-      | undefined;
-    if (!clipDictionary || Object.keys(clipDictionary).length === 0) {
+  private preparePieceVisual(mesh: Group): Pick<PieceObject, "battleAvatar"> {
+    const avatarMesh = mesh.userData?.battleAvatar as Group | undefined;
+    if (!avatarMesh) {
       return {};
     }
+    avatarMesh.visible = false;
+    avatarMesh.removeFromParent();
 
-    const mixer = new AnimationMixer(mesh);
-    const actions: AnimationBindings = {};
-    (Object.entries(clipDictionary) as [AnimationLabel, AnimationClip][]).forEach(([label, clip]) => {
-      if (!clip) return;
-      const action = mixer.clipAction(clip);
-      if (label === "idle") {
-        action.setLoop(LoopRepeat, Infinity);
-        action.enabled = true;
-        action.play();
-      } else {
-        action.setLoop(LoopOnce, 1);
-        action.clampWhenFinished = true;
-      }
-      actions[label] = action;
-    });
-    return { mixer, animations: actions };
+    const clipDictionary =
+      (avatarMesh.userData?.animationClips as Partial<Record<AnimationLabel, AnimationClip>> | undefined) ??
+      {};
+    const clips = { ...clipDictionary };
+    const battleAvatar = this.createBattleAvatar(avatarMesh, clips);
+    return { battleAvatar };
   }
 
   private playAnimation(
@@ -323,15 +320,23 @@ export class BoardScene {
     label: AnimationLabel,
     options: { fadeIn?: number; fadeOut?: number; loop?: "once" | "repeat"; timeScale?: number } = {}
   ) {
-    if (!piece.animations) return;
-    const action = piece.animations[label];
+    if (!piece.battleAvatar) return;
+    this.playAvatarAnimation(piece.battleAvatar, label, options);
+  }
+
+  private playAvatarAnimation(
+    avatar: PieceBattleAvatar,
+    label: AnimationLabel,
+    options: { fadeIn?: number; fadeOut?: number; loop?: "once" | "repeat"; timeScale?: number } = {}
+  ) {
+    const action = avatar.animations[label];
     if (!action) return;
     const fadeIn = options.fadeIn ?? 0.2;
     const fadeOut = options.fadeOut ?? 0.2;
     const loopSetting = options.loop ?? (label === "idle" ? "repeat" : "once");
     const timeScale = options.timeScale ?? 1;
 
-    Object.values(piece.animations).forEach((other) => {
+    Object.values(avatar.animations).forEach((other) => {
       if (other && other !== action) {
         other.fadeOut(fadeOut);
       }
@@ -349,6 +354,34 @@ export class BoardScene {
     }
     action.fadeIn(fadeIn);
     action.play();
+  }
+
+  private createBattleAvatar(
+    mesh: Group,
+    clips: Partial<Record<AnimationLabel, AnimationClip>>
+  ): PieceBattleAvatar {
+    const mixer = new AnimationMixer(mesh);
+    const animations: AnimationBindings = {};
+    (Object.entries(clips) as [AnimationLabel, AnimationClip][]).forEach(([label, clip]) => {
+      if (!clip) return;
+      const action = mixer.clipAction(clip);
+      if (label === "idle") {
+        action.setLoop(LoopRepeat, Infinity);
+        action.enabled = true;
+        action.play();
+      } else {
+        action.setLoop(LoopOnce, 1);
+        action.clampWhenFinished = true;
+      }
+      animations[label] = action;
+    });
+    return { mesh, mixer, animations, clips };
+  }
+
+  private cloneBattleAvatar(template: PieceBattleAvatar): PieceBattleAvatar {
+    const clone = SkeletonUtils.clone(template.mesh) as Group;
+    clone.scale.copy(template.mesh.scale);
+    return this.createBattleAvatar(clone, template.clips);
   }
 
   private async handleCastling(move: ChessJsMove) {
@@ -483,9 +516,14 @@ export class BoardScene {
     defender: PieceObject,
     params: { start: Vector3; target: Vector3 }
   ) {
+    const attackerTemplate = attacker.battleAvatar;
+    const defenderTemplate = defender.battleAvatar;
+    if (!attackerTemplate || !defenderTemplate) return;
+
+    const attackerAvatar = this.cloneBattleAvatar(attackerTemplate);
+    const defenderAvatar = this.cloneBattleAvatar(defenderTemplate);
     const { start, target } = params;
-    const attackerMesh = attacker.mesh;
-    const defenderMesh = defender.mesh;
+
     const durationFactor = 1 / this.animationSpeed;
     const center = start.clone().lerp(target, 0.5);
     const forward = target.clone().sub(start).setY(0);
@@ -503,6 +541,11 @@ export class BoardScene {
     const defenderCounter = defenderBase.clone().addScaledVector(forward, -0.12);
     const defenderCollapse = defenderBase.clone().addScaledVector(forward, -0.2);
 
+    attacker.mesh.visible = false;
+    defender.mesh.visible = false;
+
+    const attackerMesh = attackerAvatar.mesh;
+    const defenderMesh = defenderAvatar.mesh;
     attackerMesh.position.copy(start);
     defenderMesh.position.copy(target);
     attackerMesh.rotation.set(0, 0, 0);
@@ -511,81 +554,123 @@ export class BoardScene {
     attackerMesh.rotation.y = facingAngle;
     defenderMesh.rotation.y = facingAngle + Math.PI;
 
-    await this.tween(0.18 * durationFactor, (t) => {
-      const eased = easeInOutQuad(t);
-      attackerMesh.position.lerpVectors(start, attackerBase, eased);
-      defenderMesh.position.lerpVectors(target, defenderBase, eased);
-    });
+    this.scene.add(attackerMesh, defenderMesh);
+    this.mixers.add(attackerAvatar.mixer);
+    this.mixers.add(defenderAvatar.mixer);
 
-    this.playAnimation(attacker, "attack", {
-      fadeIn: 0.08,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    await this.tween(0.2 * durationFactor, (t) => {
-      const eased = easeOutCubic(t);
-      attackerMesh.position.lerpVectors(attackerBase, attackerWindup, eased);
-      attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.22;
-      defenderMesh.position.lerpVectors(defenderBase, defenderRetreat, eased * 0.6);
-      defenderMesh.position.y = Math.sin(Math.PI * eased * 0.5) * 0.18;
-    });
-    await this.tween(0.08 * durationFactor, () => {});
-    this.shakeCamera(0.22 * this.vfxIntensity, 0.18 * durationFactor);
+    const cleanup = () => {
+      this.scene.remove(attackerMesh);
+      this.scene.remove(defenderMesh);
+      attackerAvatar.mixer.stopAllAction();
+      defenderAvatar.mixer.stopAllAction();
+      this.mixers.delete(attackerAvatar.mixer);
+      this.mixers.delete(defenderAvatar.mixer);
+    };
 
-    this.playAnimation(defender, "hit", {
-      fadeIn: 0.05,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    await this.tween(0.18 * durationFactor, (t) => {
-      const eased = easeOutQuad(t);
-      attackerMesh.position.lerpVectors(attackerWindup, attackerLunge, eased);
-      defenderMesh.position.lerpVectors(defenderRetreat, defenderBase, eased);
-      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.32;
-    });
-    await this.tween(0.08 * durationFactor, () => {});
-    this.shakeCamera(0.28 * this.vfxIntensity, 0.18 * durationFactor);
+    try {
+      await this.tween(0.18 * durationFactor, (t) => {
+        const eased = easeInOutQuad(t);
+        attackerMesh.position.lerpVectors(start, attackerBase, eased);
+        defenderMesh.position.lerpVectors(target, defenderBase, eased);
+      });
 
-    this.playAnimation(defender, "attack", {
-      fadeIn: 0.06,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    this.playAnimation(attacker, "hit", {
-      fadeIn: 0.05,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    await this.tween(0.18 * durationFactor, (t) => {
-      const eased = easeOutQuad(t);
-      defenderMesh.position.lerpVectors(defenderBase, defenderCounter, eased);
-      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.24;
-      attackerMesh.position.lerpVectors(attackerLunge, attackerBase, eased);
-      attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.18;
-    });
-    await this.cinematicHit(center, this.cinematicIntensity(attacker.kind) * 0.75);
-    await this.tween(0.1 * durationFactor, () => {});
+      this.playAvatarAnimation(attackerAvatar, "attack", {
+        fadeIn: 0.08,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      await this.tween(0.2 * durationFactor, (t) => {
+        const eased = easeOutCubic(t);
+        attackerMesh.position.lerpVectors(attackerBase, attackerWindup, eased);
+        attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.22;
+        defenderMesh.position.lerpVectors(defenderBase, defenderRetreat, eased * 0.6);
+        defenderMesh.position.y = Math.sin(Math.PI * eased * 0.5) * 0.18;
+      });
+      await this.tween(0.08 * durationFactor, () => {});
+      this.shakeCamera(0.22 * this.vfxIntensity, 0.18 * durationFactor);
 
-    this.playAnimation(attacker, "attack", {
-      fadeIn: 0.08,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    this.playAnimation(defender, "death", {
-      fadeIn: 0.12,
-      loop: "once",
-      timeScale: this.animationSpeed
-    });
-    this.shakeCamera(0.36 * this.vfxIntensity, 0.24 * durationFactor);
-    await this.tween(0.22 * durationFactor, (t) => {
-      const eased = easeInOutQuad(t);
-      attackerMesh.position.lerpVectors(attackerBase, target, eased);
-      defenderMesh.position.lerpVectors(defenderCounter, defenderCollapse, eased);
-      defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.28;
-    });
-    await this.tween(0.12 * durationFactor, () => {});
+      this.playAvatarAnimation(defenderAvatar, "hit", {
+        fadeIn: 0.05,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      await this.tween(0.18 * durationFactor, (t) => {
+        const eased = easeOutQuad(t);
+        attackerMesh.position.lerpVectors(attackerWindup, attackerLunge, eased);
+        defenderMesh.position.lerpVectors(defenderRetreat, defenderBase, eased);
+        defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.32;
+      });
+      await this.tween(0.08 * durationFactor, () => {});
+      this.shakeCamera(0.28 * this.vfxIntensity, 0.18 * durationFactor);
 
-    await this.captureEffect(defender);
+      this.playAvatarAnimation(defenderAvatar, "attack", {
+        fadeIn: 0.06,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      this.playAvatarAnimation(attackerAvatar, "hit", {
+        fadeIn: 0.05,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      await this.tween(0.18 * durationFactor, (t) => {
+        const eased = easeOutQuad(t);
+        defenderMesh.position.lerpVectors(defenderBase, defenderCounter, eased);
+        defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.24;
+        attackerMesh.position.lerpVectors(attackerLunge, attackerBase, eased);
+        attackerMesh.position.y = Math.sin(Math.PI * eased) * 0.18;
+      });
+      await this.cinematicHit(center, this.cinematicIntensity(attacker.kind) * 0.75);
+      await this.tween(0.1 * durationFactor, () => {});
+
+      this.playAvatarAnimation(attackerAvatar, "attack", {
+        fadeIn: 0.08,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      this.playAvatarAnimation(defenderAvatar, "death", {
+        fadeIn: 0.12,
+        loop: "once",
+        timeScale: this.animationSpeed
+      });
+      this.shakeCamera(0.36 * this.vfxIntensity, 0.24 * durationFactor);
+      await this.tween(0.22 * durationFactor, (t) => {
+        const eased = easeInOutQuad(t);
+        attackerMesh.position.lerpVectors(attackerBase, target, eased);
+        defenderMesh.position.lerpVectors(defenderCounter, defenderCollapse, eased);
+        defenderMesh.position.y = Math.sin(Math.PI * eased) * 0.28;
+      });
+      await this.tween(0.12 * durationFactor, () => {});
+    } finally {
+      cleanup();
+    }
+
+    attacker.mesh.position.copy(target);
+    attacker.mesh.rotation.set(0, 0, 0);
+    defender.mesh.position.copy(target);
+    defender.mesh.rotation.set(0, 0, 0);
+    defender.mesh.visible = true;
+
+    try {
+      await this.captureEffect(defender);
+    } finally {
+      attacker.mesh.visible = true;
+    }
+  }
+
+  private canPlayDuel(attacker: PieceObject, defender: PieceObject) {
+    const attackerAvatar = attacker.battleAvatar;
+    const defenderAvatar = defender.battleAvatar;
+    if (!attackerAvatar || !defenderAvatar) {
+      return false;
+    }
+    return Boolean(
+      attackerAvatar.animations.attack &&
+        attackerAvatar.animations.hit &&
+        defenderAvatar.animations.attack &&
+        defenderAvatar.animations.hit &&
+        defenderAvatar.animations.death
+    );
   }
 
   private async animatePieceAttack(
@@ -598,7 +683,7 @@ export class BoardScene {
     const mesh = piece.mesh;
     mesh.position.copy(start);
     mesh.rotation.set(0, 0, 0);
-    const canDuel = Boolean(piece.animations?.attack && piece.animations?.hit);
+    const canDuel = this.canPlayDuel(piece, captured);
     if (canDuel) {
       await this.playDuel(piece, captured, { start, target });
       mesh.position.copy(target);
@@ -804,9 +889,9 @@ export class BoardScene {
   private clearPieces() {
     for (const piece of this.pieces.values()) {
       this.scene.remove(piece.mesh);
-      if (piece.mixer) {
-        piece.mixer.stopAllAction();
-        this.mixers.delete(piece.mixer);
+      if (piece.battleAvatar) {
+        piece.battleAvatar.mixer.stopAllAction();
+        this.mixers.delete(piece.battleAvatar.mixer);
       }
     }
     this.pieces.clear();
